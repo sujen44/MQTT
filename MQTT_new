@@ -1,0 +1,261 @@
+#define TINY_GSM_MODEM_SIM900       //select GSM module
+#include <TinyGsmClient.h>          
+#include <PubSubClient.h>
+#include<SoftwareSerial.h>
+//#include <SD.h>
+//#include <SPI.h>
+#include <LiquidCrystal.h>
+//#define chs 10
+
+LiquidCrystal lcd(2, 3, 4, 5, 6, 7);   //initialize lcd pins
+SoftwareSerial myserial(18, 19);       // initialize TX,RX pin for GSM 
+//TinyGsm modem(Serial1);
+TinyGsm modem(myserial);
+TinyGsmClient client(modem);
+PubSubClient mqtt(client);
+float amps, actual_voltage;         //variable for different sensors
+//int8_t count = 0;
+char aux_str[50];                   //buffer for AT commands
+char resptime[25];                 //buffer for timestamp
+String timestamp;                  //stores timestamp 
+//void(* resetFunc) (void) = 0;
+String resp = "4951111";          //variable for controlling arduino pin 8 and overall display in lcd
+
+void setup() {
+  pinMode(8, OUTPUT);             // Relay pin
+  Serial.begin(9600);             
+  delay(10);
+  myserial.begin(9600);           // GSM.begin();
+  delay(3000);
+  timestamp = "";
+  lcd.begin(16, 2);
+  lcd.setCursor(3, 0);
+  lcd.print(F("Smart Meter"));
+  //lcd.setCursor(7, 1);
+  delay(3000);
+  modem.restart();
+
+  if (!modem.waitForNetwork()) {
+    while (true);
+    Serial.println("network connected");
+  }
+
+
+  if (!modem.gprsConnect("web", "", "")) {
+    while (true);
+    Serial.println("GPRS Connected");
+  }
+
+  mqtt.setServer("m13.cloudmqtt.com", 18590);
+  mqtt.setCallback(mqttCallback);
+  mqtt.connect("cloudmqtt", "vxnxuyik", "_9xGZLTrTr2M");
+  mqtt.subscribe("switch");
+  //Serial.println("initialization complete");
+  lcd.clear();
+  lcd.print(F("Init. complete"));
+  delay(2500);
+}
+
+void loop() {
+
+  timestamp = "";
+  setCurrent();
+  setVoltage();
+  control();
+  time_stamp();
+  pub();
+  mqtt.loop();
+}
+
+void mqttCallback(char* topic, byte* payload , unsigned int length)      // Interrupts the program and gets the value from the subscribed topic
+{
+  resp = " ";
+  int8_t i;
+  lcd.clear();
+  lcd.print(F("Message arrived"));
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  for (i = 0; i < length; i++) {
+    //Serial.print((char)payload[i]);
+    resp += (char)payload[i];
+  }
+
+  //Serial.println();
+  //Serial.print("String generated:- ");
+  //Serial.println(resp);
+
+
+  /*  if (resp == "ON")
+    {
+      Serial.println("LED ON");
+      digitalWrite(LED_PIN, HIGH);
+    }
+    else {
+
+      Serial.println("LED OFF");
+      digitalWrite(LED_PIN, ledStatus);
+    }
+    Serial.println();*/
+  //if (String(topic) == "atropos44/feeds/switchfeed") {
+  // ledStatus = !ledStatus;
+  //digitalWrite(LED_PIN, ledStatus);
+  //}
+}
+
+int8_t sendATcommand(char* ATcommand, char* expected_answer, unsigned int timeout) {
+
+  uint8_t x = 0,  answer = 0;
+  char response[50];
+  unsigned long previous;
+
+  memset(response, '\0', 50);    // Initialize the string
+
+  delay(100);
+
+  while ( myserial.available() > 0) myserial.read();   // Clean the input buffer
+
+  myserial.println(ATcommand);    // Send the AT command
+  x = 0;
+  previous = millis();
+
+  // this loop waits for the answer
+  do {
+    if (myserial.available() != 0) {
+      // if there are data in the UART input buffer, reads it and checks for the asnwer
+      response[x] = myserial.read();
+      //Serial.print(response[x]);
+      x++;
+      //Serial.println(response);
+      // check if the desired answer  is in the response of the module
+      if (strstr(response, expected_answer) != NULL)
+      {
+        answer = 1;
+        Serial.println(response);
+
+      }
+    }
+
+  }
+  // Waits for the asnwer with time out
+  while ((answer == 0) && ((millis() - previous) < timeout));
+
+  {
+
+    return answer;
+
+  }
+}
+
+void control()
+{
+  if (resp == "4951111")
+  {
+    digitalWrite(8, 0);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print(F("Gham Power Nepal"));
+    lcd.setCursor(3, 1);
+    lcd.print(F("Smart Meter"));
+    delay(5000);
+
+    lcd.clear();
+    lcd.print(F("Voltage:"));
+    lcd.setCursor(9, 0);
+    lcd.print(actual_voltage);
+    lcd.setCursor(14, 0);
+    lcd.print(F("V"));
+
+    lcd.setCursor(0, 1);
+    lcd.print(F("Current:"));
+    lcd.setCursor(9, 1);
+    lcd.print(amps);
+    lcd.setCursor(14, 1);
+    lcd.print(F("A"));
+    delay(7000);
+  }
+  else if (resp == "4951000")
+  {
+    digitalWrite(8, 1);
+    delay(1000);
+    lcd.clear();
+    lcd.print(F("Low Credit"));
+    delay(5000);
+  }
+}
+
+void setCurrent() {
+  float sample2 = 0;
+  for (int i = 0 ; i < 150; i++)
+  {
+    sample2 += analogRead(A1);
+    delay(2);
+  }
+  sample2 = sample2 / 150;
+  amps = (sample2 - 512) * 0.048828;
+  amps = abs(amps);
+}
+
+void setVoltage() {
+  float sample1 = 0;
+  for (int i = 0; i < 150; i++) {
+    sample1 += analogRead(A0);
+    delay(2);
+  }
+  sample1 = sample1 / 150;
+  float measured_Svoltage = (5.0 * sample1) / 1023.0;
+  actual_voltage =  measured_Svoltage * 41;
+}
+
+void time_stamp()
+{
+  int8_t i = 0;
+  sendATcommand("ATEO", "OK", 2000);              //Echo off
+  sendATcommand("AT+CLTS=1", "OK", 2000);         //register timestamp from gsm network
+  sendATcommand("AT&W", "OK", 2000);              // save profile
+  sendATcommand("AT+CCLK?", "+CCLK:", 2000);      //get the latest timestamp
+  if (myserial.available() >= 0)
+  {
+    for (i = 0; i <= 22; i++)
+    {
+      delay(10);
+      resptime[i] = myserial.read();
+    }
+    for (i = 2; i <= 15; i++)
+    {
+      if (i == 4 || i == 7 || i == 10 || i == 13)
+      {
+        i++;
+      }
+      timestamp += resptime[i];
+    }
+
+  }
+  delay(100);
+  lcd.clear();
+  lcd.print(timestamp);
+  delay(3000);
+  //Serial.println(timestamp);
+}
+
+void pub()
+{
+  String ph = "9813004332";
+  char buf1[timestamp.length() + 1], buf2[ph.length() + 1], a[5], v[7];
+  timestamp.toCharArray(buf1, timestamp.length() + 1);
+  ph.toCharArray(buf2, ph.length() + 1);
+  dtostrf(amps, 6, 2, a);
+  dtostrf (actual_voltage, 6, 2, v);
+  Serial.println("start publishing");
+  mqtt.publish("timestamp", buf1);
+  delay(2000);
+  mqtt.publish("phone", buf2);
+  delay(2000);
+  mqtt.publish("current", a);
+  delay(2000);
+  mqtt.publish("voltage", v);
+  delay(2000);
+  lcd.clear();
+  lcd.print(F("Upload Success"));
+  delay(2500);
+}
